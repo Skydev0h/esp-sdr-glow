@@ -55,3 +55,32 @@ menu "ESP-SDR transport"
         default 44
 
 endmenu
+
+menu "ESP-SDR board"
+
+    choice ESP_SDR_BOARD
+        prompt "On-device UI board"
+        default ESP_SDR_BOARD_NONE
+        help
+            Adds a standalone receiver UI on a board's own display. The UI
+            runs between serial commands and pauses while a host holds the
+            serial lease, so host tools keep working.
+
+        config ESP_SDR_BOARD_NONE
+            bool "None (host tools only)"
+
+        config ESP_SDR_ODROID_GO
+            bool "ODROID-GO display, buttons and speaker UI"
+            depends on IDF_TARGET_ESP32
+            help
+                Spectrum/waterfall, Zigbee channel survey and a signal hunter
+                with a pitch-by-level tone on the ODROID-GO ILI9341 display,
+                D-pad and buttons and DAC speaker. Reserves the board's
+                display, SD, button, LED and speaker pins.
+    endchoice
+
+    config ESP_SDR_LOCAL_UI
+        bool
+        default y if ESP_SDR_ODROID_GO
+
+endmenu

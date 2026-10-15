@@ -62,18 +62,38 @@ if(IDF_TARGET STREQUAL "esp32c61" OR IDF_TARGET STREQUAL "esp32s31")
     list(APPEND sources "common/burst_gain_table.c")
 endif()
 
+set(board_includes)
+if(IDF_TARGET STREQUAL "esp32")
+    # Board UI drivers (ODROID-GO). Requirements are resolved before Kconfig
+    # values exist, so list them for every ESP32 build; unused code is dropped.
+    list(APPEND dependencies esp_lcd esp_driver_spi esp_driver_ledc esp_driver_dac esp_adc esp_hal_ana_conv)
+endif()
+if(CONFIG_ESP_SDR_LOCAL_UI)
+    list(APPEND sources "boards/common/sdr_view.c")
+    list(APPEND board_includes "boards/common")
+endif()
+if(CONFIG_ESP_SDR_ODROID_GO)
+    list(APPEND sources "boards/odroidgo/ui.c" "boards/odroidgo/lcd.c" "boards/odroidgo/io.c"
+                        "boards/odroidgo/tone.c" "boards/odroidgo/zb.c")
+    list(APPEND board_includes "boards/odroidgo")
+endif()
+
 idf_component_register(SRCS "${receiver}" ${sources}
     LDFRAGMENTS ${fragments}
-    PRIV_INCLUDE_DIRS "common" ${target_includes} "diagnostics"
+    PRIV_INCLUDE_DIRS "common" ${target_includes} "diagnostics" ${board_includes}
     REQUIRES ${dependencies})
 
 # Regenerate at build time (not only CMake configure time). The embedded record
 # is also the artifact exporter's source of revision and UTC build time.
 idf_build_get_property(version_python PYTHON)
 set(version_header "${CMAKE_CURRENT_BINARY_DIR}/generated/build_version.h")
+set(version_profile "${IDF_TARGET}")
+if(CONFIG_ESP_SDR_ODROID_GO)
+    set(version_profile "odroid-go")
+endif()
 add_custom_target(esp_sdr_build_version
     COMMAND "${version_python}" "${PROJECT_DIR}/tools/generate_version.py"
-        --root "${PROJECT_DIR}" --profile "${IDF_TARGET}" --output "${version_header}"
+        --root "${PROJECT_DIR}" --profile "${version_profile}" --output "${version_header}"
     BYPRODUCTS "${version_header}"
     VERBATIM)
 add_dependencies(${COMPONENT_LIB} esp_sdr_build_version)
@@ -87,6 +107,11 @@ if(IDF_TARGET STREQUAL "esp32c61" OR IDF_TARGET STREQUAL "esp32s31")
 endif()
 if(IDF_TARGET STREQUAL "esp32c2")
     target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=soc_get_available_memory_regions")
+endif()
+if(CONFIG_ESP_SDR_ODROID_GO)
+    # 320 px wide plot: 512-point FFTs, 480 kept bins, still 4096 samples.
+    # Gain index per sample: SPEC levels referred to gain 50 even under AGC.
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE SV_FFT_N=512 SV_SEGMENTS=8 SV_BINS=480 SV_GAIN_COMP=1)
 endif()
 foreach(probe IN LISTS probes)
     if(${probe})

@@ -1,3 +1,147 @@
+# esp-sdr-glow — esp-sdr fork for ODROID-GO with GLOW!
+
+A handheld 2.4 GHz spectrum analyzer and signal hunter on the
+[ODROID-GO](https://wiki.odroid.com/odroid_go/odroid_go), built on
+[ESP-SDR](https://github.com/ESPARGOS/esp-sdr). It reads raw I/Q samples from the
+ESP32's own Wi-Fi receiver and shows them on the ODROID-GO's screen, with its
+buttons, speaker and battery. You don't need a computer, a USB dongle or any
+extra radio hardware.
+
+Its signature view is **GLOW**, a digital-phosphor (persistence) display.
+Every snapshot adds a little intensity under its trace, and the picture fades
+back to black. Levels that are always present glow hot, and rare bursts stay
+faint and cold. You see the noise floor, the busy channels and the occasional
+outliers in one picture. The channel pages use the same idea: each Wi-Fi or
+Zigbee channel gets its own glowing column.
+
+The original ESP-SDR README follows below the line.
+
+## What it does
+
+| Page | What you see |
+| --- | --- |
+| **SPEC** | Spectrum around a centre frequency (80, 40 or 16 MHz span) in three views. **GLOW** (default) uses the whole screen, **PEAK** adds a falling peak hold and a waterfall, **LIVE** is a plain trace with a waterfall. Zigbee or Wi-Fi channel marks are overlaid. |
+| **WIFI** | Channels 1–13, measured in the central 16 MHz of each. Per channel: level above the noise floor (GLOW column or bar), decaying hold, session max and **airtime**. Airtime is the share of time the channel is busy, taken from 13 µs windows inside each snapshot with no decoding. The quietest of 1/6/11 is marked **BEST**. |
+| **ZIGBEE** | 802.15.4 channels 11–26 (2 MHz each), with the same levels plus **activity**, the share of snapshots that caught a burst. |
+| **HUNT** | One Zigbee channel, one Wi-Fi channel or any frequency. Shows a big dB-over-floor number, a level bar and 32 s of history. The speaker plays a **pitch** that rises with the level (+12 dB = one octave) or works as a **Geiger counter**: one click per caught burst, louder for stronger bursts. Walk around and follow the sound. |
+
+Plugged into a computer, the firmware still speaks the ESP-SDR serial protocol
+(UART at 2 Mbaud through the ODROID-GO's CP2102N). The
+[browser viewer](https://espargos.net/espsdr/app/) works as usual, and the
+screen shows *USB HOST IN CONTROL* until the host has been quiet for 5 s.
+
+## Controls
+
+| Key | Everywhere |
+| --- | --- |
+| MENU | Page: SPEC → WIFI/ZIGBEE → HUNT |
+| ↑ ↓ | Gain (hold > 1 s for steps of 4) |
+| SELECT | SPEC: hardware AGC on/off. Other pages: auto-ranging on/off |
+
+| Key | SPEC |
+| --- | --- |
+| ← → | Tune by 1 MHz (hold: 1/8 of the span) |
+| A | Span 80 / 40 / 16 MS/s (refits the scale) |
+| B (release) | View: LIVE → PEAK → GLOW |
+| B held + ← → / ↑ ↓ | GLOW fill per snapshot / fade time |
+| START (release) | Pause |
+| START held + ↑ ↓ / ← → / A | Scale top ±5 dB / range ±10 dB / fit to the signal now |
+| VOLUME | Channel marks: Zigbee → Wi-Fi → off |
+
+| Key | WIFI / ZIGBEE |
+| --- | --- |
+| ← → | Select a channel |
+| A | Hunt the selected channel |
+| B (release) | Bars ↔ GLOW (B held + D-pad: fill / fade) |
+| START | Reset the statistics |
+| VOLUME | Switch WIFI ↔ ZIGBEE |
+
+| Key | HUNT |
+| --- | --- |
+| ← → | Channel, or frequency in 1 MHz steps |
+| A | Target: Zigbee channel → Wi-Fi channel → MHz |
+| B | Sound: off → pitch → tick (Geiger) |
+| START | Reset max and history |
+| VOLUME | Sound on / mute |
+
+## Install
+
+**This replaces whatever is in the ODROID-GO's flash** (stock launcher,
+Retro-Go, MicroPython…). Back up the whole 16 MB first, with the side power
+switch on:
+
+```sh
+esptool -p /dev/ttyUSB0 -b 921600 read-flash 0 0x1000000 odroid-go-backup.bin
+```
+
+Flash the release image (`esp-sdr-glow-odroid-go-*.bin` from Releases) at offset 0:
+
+```sh
+esptool -p /dev/ttyUSB0 -b 921600 write-flash 0x0 esp-sdr-glow-odroid-go-v0.1.0.bin
+```
+
+(esptool 4.x spells these `read_flash` / `write_flash`.) To go back, write the
+backup the same way: `write-flash 0x0 odroid-go-backup.bin`.
+
+### Build it yourself
+
+Use the ESP-IDF commit pinned in `firmware-targets.json`, as for every ESP-SDR
+target:
+
+```sh
+. ~/esp/esp-idf/export.sh
+IDF_COMPONENT_MANAGER=0 idf.py -B build-odroid-go -DIDF_TARGET=esp32 \
+    -DSDKCONFIG=build-odroid-go/sdkconfig -DSDKCONFIG_DEFAULTS=sdkconfig.defaults.odroid-go build
+idf.py -B build-odroid-go -p /dev/ttyUSB0 flash
+```
+
+The board code lives in `main/boards/odroidgo/`: the display driver, buttons
+and battery, the speaker tone and clicks, burst-aware band power, and the UI.
+Shared spectrum helpers are in `main/boards/common/`. The original ESP32
+receiver gained a small local-UI API (`sdr_local_*`) in
+`main/targets/esp32/receiver.c`.
+
+## How it works, and the limits
+
+- **Snapshots, not a stream.** The original ESP32 captures up to 16,380
+  samples at a time: 0.2 ms at 80 MS/s, 1 ms at 16 MS/s. Between snapshots
+  it computes and draws, so roughly 20–30 % of air time is actually heard.
+  GLOW, hold and the statistics accumulate over many snapshots. For gap-free
+  capture and demodulation you need an ESP32-S3/S31 or a real SDR.
+- **Receive only**, about 1.84–2.7 GHz (2.4 GHz ISM is the sweet spot).
+- **Levels are in dBFS referred to gain index 50.** Every sample word carries
+  the gain index it was taken with (bits 20–27), so SPEC compensates each
+  sample even under hardware AGC. From index 36 up, one step is about 0.94 dB.
+  This was measured on one unit against the ESP32's own 2400 MHz crystal
+  harmonic. Below 36 the PHY's gain table is not monotonic.
+- **Self-made spurs are handled.** SPI traffic to the display during a capture
+  shows up as a comb of spurs, so every capture waits for the display DMA to
+  finish. The ESP32's own 40 MHz crystal harmonics (2400/2440/2480 MHz) and the
+  LO's DC residue are blanked in SPEC and excluded from channel levels.
+- **Battery** percentage comes from a tabulated LiPo curve. The ODROID-GO
+  wires its charger status only to the charge LED, so charging cannot be shown.
+- **Opening the serial port resets the board** (DTR/RTS auto-reset), as on most
+  ESP32 boards.
+- Diagnostics over the serial protocol: `OGSTAT?` reports the UI state.
+  `OGSET <page> <tone> <kind> <ch>` sets HUNT up remotely.
+
+## Credits
+
+- [ESPARGOS/esp-sdr](https://github.com/ESPARGOS/esp-sdr): the raw I/Q capture
+  this fork is built on (GPL-3.0).
+- [fedaykinofdune/CardputerADV-SDR](https://github.com/fedaykinofdune/CardputerADV-SDR):
+  the on-device board UI pattern and the shared spectrum helpers in
+  `main/boards/common/` (GPL-3.0).
+- [ducalex/retro-go](https://github.com/ducalex/retro-go): the ODROID-GO pin map
+  and display init values.
+- The 5×7 font is the classic Adafruit GFX glcdfont (BSD).
+- Like upstream, much of this fork's code was written with AI assistance
+  (Claude by Anthropic).
+
+esp-sdr-glow is GPL-3.0-or-later, like ESP-SDR.
+
+<hr/>
+
 # ESP-SDR firmware
 
 <img src="docs/espargos-logo.png" width="40%" align="right" alt="ESPARGOS logo">

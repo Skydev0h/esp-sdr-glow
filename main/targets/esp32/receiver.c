@@ -28,6 +28,9 @@
 #include "soc/dport_reg.h"
 #include "soc/dport_access.h"
 #include "heap_memory_layout.h"
+#if CONFIG_ESP_SDR_LOCAL_UI
+#include "sdr_local.h"
+#endif
 
 /* Reserve both SRAM banks, including their instruction aliases. Mode 2 only
  * exposes 32 KiB to MAC; mode 3 exposes the entire 64 KiB capture aperture. */
@@ -46,6 +49,11 @@ static unsigned frequency_mhz=2412;
 /* Original ESP32 BBTOP RX filter: registers 1/2, seven-bit capacitor DAC.
  * Preserve bit 7 and restore PHY calibration before any retune or transfer. */
 static int rx_filter = -1;
+#if CONFIG_ESP_SDR_LOCAL_UI
+static unsigned rx_filter_mhz;
+/* Set while the board UI drives the receiver: no protocol text on the UART. */
+static bool local_call;
+#endif
 extern unsigned rom_chip_i2c_readReg(unsigned, unsigned, unsigned);
 extern void rom_chip_i2c_writeReg(unsigned, unsigned, unsigned, unsigned);
 static unsigned filter_saved[2];
@@ -66,6 +74,9 @@ extern void rom_pbus_xpd_tx_off(void);
 extern void rom_set_rxclk_en(int);
 
 static void reply(const char *fmt, ...) {
+#if CONFIG_ESP_SDR_LOCAL_UI
+    if (local_call) return;
+#endif
     char text[256];
     va_list ap;
     va_start(ap, fmt);
@@ -201,6 +212,41 @@ static void tune_rx(unsigned mhz) {
     }
 }
 
+#if CONFIG_ESP_SDR_LOCAL_UI
+/* Services for the on-device board UI (ODROID-GO). The UI runs in the command
+ * loop's idle slot, so it never overlaps a host transaction. */
+const uint32_t *sdr_local_capture(unsigned n, unsigned divider) {
+    unsigned elapsed;
+    if (divider != 0 && divider != 1 && divider != 6) return NULL;
+    local_call = true;
+    bool ok = acquire_iq(n, 0, divider == 0 ? 1 : divider == 1 ? 2 : 0, &elapsed);
+    local_call = false;
+    return ok ? samples : NULL;
+}
+unsigned sdr_local_max_samples(void) { return MAX_SAMPLES; }
+unsigned sdr_local_freq(void) { return frequency_mhz; }
+void sdr_local_tune(unsigned mhz) {
+    if (!rx_frequency_valid(mhz) || mhz == frequency_mhz) return;
+    frequency_mhz = mhz;
+    tune_rx(mhz);
+    prepare_rx();
+    apply_gain();
+}
+int sdr_local_gain(void) { return hardware_agc ? -1 : (int)gain_code; }
+unsigned sdr_local_gain_max(void) { return gain_max; }
+void sdr_local_set_gain(int code) {
+    hardware_agc = code < 0;
+    if (code >= 0) gain_code = (unsigned)code > gain_max ? gain_max : (unsigned)code;
+    apply_gain();
+}
+unsigned sdr_local_bandwidth(void) { return rx_filter < 0 ? 0 : rx_filter_mhz; }
+void sdr_local_set_bandwidth(unsigned mhz) {
+    if (mhz && (mhz < RX_BANDWIDTH_MIN || mhz > RX_BANDWIDTH_MAX)) return;
+    rx_filter = mhz ? rx_bandwidth_dcap(mhz) : -1;
+    rx_filter_mhz = mhz;
+}
+#endif
+
 static bool capture_rate(unsigned n, unsigned rate, unsigned format) {
     if (n < 256 || n > MAX_SAMPLES || (rate != 0 && rate != 1 && rate != 6)) {
         reply("ERR capture_settings\n"); return false;
@@ -210,6 +256,9 @@ static bool capture_rate(unsigned n, unsigned rate, unsigned format) {
 
 
 static void command(const char *line) {
+#if CONFIG_ESP_SDR_LOCAL_UI
+    if (board_ui_command(line)) return;
+#endif
     if (burst_version_command(line)) return;
     if (burst_gpio_command(line)) return;
 #ifdef RING_PROBE
@@ -223,7 +272,11 @@ static void command(const char *line) {
     else if (!strcmp(line, "CAPS")) reply("CAPS VERSION GPIO SPEC SPECN SPECCAPS SPECSTAT DCT UARTBAUD RXLIMITS SERIALLEASE TUNEEXT RX40 RX16 LPFANA GAIN HWAGC IQ8\n");
     else if (sscanf(line, "BANDWIDTH %u %c", &n, &extra)==1 &&
              (!n || (n>=RX_BANDWIDTH_MIN && n<=RX_BANDWIDTH_MAX))) {
-        rx_filter=rx_bandwidth_dcap(n); reply("OK\n");
+        rx_filter=rx_bandwidth_dcap(n);
+#if CONFIG_ESP_SDR_LOCAL_UI
+        rx_filter_mhz=n;
+#endif
+        reply("OK\n");
     }
     else if (!strcmp(line, "LPF AUTO")) { rx_filter=-1; reply("OK\n"); }
     else if (sscanf(line, "LPF %u %c", &n, &extra)==1 && n<=127) { rx_filter=n; reply("OK\n"); }
@@ -278,12 +331,26 @@ void app_main(void) {
     gain_max = (REG_READ(RX_GAIN) >> 8) & 127;
     REG_CLR_BIT(RX_GAIN, BIT(23)); /* Hardware AGC is the default. */
     fflush(stdout);
+#if CONFIG_ESP_SDR_LOCAL_UI
+    /* Claims the board's display/input pins before GPIO discovery parks the rest. */
+    board_ui_init();
+#endif
     burst_serial_init();
     char line[128];
+    int64_t lease_deadline = 0;
     for (;;) {
         int status = burst_serial_poll_line(line, sizeof(line));
-        if (!status) { vTaskDelay(1); continue; }
+        if (!status) {
+#if CONFIG_ESP_SDR_LOCAL_UI
+            /* The display runs between commands and pauses while a host is
+             * active; five seconds of silence hand the radio back. */
+            if (board_ui_step(esp_timer_get_time() < lease_deadline)) continue;
+#endif
+            vTaskDelay(1);
+            continue;
+        }
         if (status < 0) reply("ERR command_length\n");
         else command(line);
+        lease_deadline = esp_timer_get_time() + 5000000;
     }
 }
