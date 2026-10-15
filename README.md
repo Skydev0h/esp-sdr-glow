@@ -1,4 +1,6 @@
-# esp-sdr-glow — esp-sdr fork for ODROID-GO with GLOW!
+# esp-sdr-glow
+
+**ESP-SDR fork for the ODROID-GO, with GLOW!**
 
 A handheld 2.4 GHz spectrum analyzer and signal hunter on the
 [ODROID-GO](https://wiki.odroid.com/odroid_go/odroid_go), built on
