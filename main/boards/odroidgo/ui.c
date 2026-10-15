@@ -77,7 +77,7 @@ enum { TGT_ZB, TGT_WIFI, TGT_MHZ, TGTS };
 static int hunt_kind = TGT_ZB;     /* what HUNT follows */
 static int hunt_ch = 15;           /* Zigbee 11..26 or Wi-Fi 1..13 */
 static unsigned hunt_mhz = 2425;   /* TGT_MHZ, 1 MHz steps */
-static int tone_mode = 1;          /* 0 off, 1 pitch, 2 tick */
+static int tone_mode = 2;          /* 0 off, 1 pitch, 2 tick (Geiger, default) */
 
 /* Shared state */
 static unsigned held_prev, released, swallow; /* swallow: keys whose release must not act */

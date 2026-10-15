@@ -27,7 +27,7 @@ The original ESP-SDR README follows below the line.
 | **SPEC** | Spectrum around a centre frequency (80, 40 or 16 MHz span) in three views. **GLOW** (default) uses the whole screen, **PEAK** adds a falling peak hold and a waterfall, **LIVE** is a plain trace with a waterfall. Zigbee or Wi-Fi channel marks are overlaid. |
 | **WIFI** | Channels 1–13, measured in the central 16 MHz of each. Per channel: level above the noise floor (GLOW column or bar), decaying hold, session max and **airtime**. Airtime is the share of time the channel is busy, taken from 13 µs windows inside each snapshot with no decoding. The quietest of 1/6/11 is marked **BEST**. |
 | **ZIGBEE** | 802.15.4 channels 11–26 (2 MHz each), with the same levels plus **activity**, the share of snapshots that caught a burst. |
-| **HUNT** | One Zigbee channel, one Wi-Fi channel or any frequency. Shows a big dB-over-floor number, a level bar and 32 s of history. The speaker plays a **pitch** that rises with the level (+12 dB = one octave) or works as a **Geiger counter**: one click per caught burst, louder for stronger bursts. Walk around and follow the sound. |
+| **HUNT** | One Zigbee channel, one Wi-Fi channel or any frequency. Shows a big dB-over-floor number, a level bar and 32 s of history. The speaker works as a **Geiger counter** (one click per caught burst, louder for stronger bursts) or plays a **pitch** that rises with the level (+12 dB = one octave). Walk around and follow the sound. |
 
 Plugged into a computer, the firmware still speaks the ESP-SDR serial protocol
 (UART at 2 Mbaud through the ODROID-GO's CP2102N). The
@@ -64,7 +64,7 @@ screen shows *USB HOST IN CONTROL* until the host has been quiet for 5 s.
 | --- | --- |
 | ← → | Channel, or frequency in 1 MHz steps |
 | A | Target: Zigbee channel → Wi-Fi channel → MHz |
-| B | Sound: off → pitch → tick (Geiger) |
+| B | Sound: tick (Geiger, default) → off → pitch |
 | START | Reset max and history |
 | VOLUME | Sound on / mute |
 
