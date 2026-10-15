@@ -14,6 +14,8 @@ faint and cold. You see the noise floor, the busy channels and the occasional
 outliers in one picture. The channel pages use the same idea: each Wi-Fi or
 Zigbee channel gets its own glowing column.
 
+<p align="center"><img src="docs/odroid-go-glow.jpg" width="70%" alt="GLOW view on the ODROID-GO at 2440 MHz, 80 MS/s: two Wi-Fi access points (channels 6 and 11) glow above the noise floor, with Zigbee channel numbers along the axis"></p>
+
 The original ESP-SDR README follows below the line.
 
 ## What it does
