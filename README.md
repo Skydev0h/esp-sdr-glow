@@ -112,7 +112,13 @@ receiver gained a small local-UI API (`sdr_local_*`) in
   it computes and draws, so roughly 20–30 % of air time is actually heard.
   GLOW, hold and the statistics accumulate over many snapshots. For gap-free
   capture and demodulation you need an ESP32-S3/S31 or a real SDR.
-- **Receive only**, about 1.84–2.7 GHz (2.4 GHz ISM is the sweet spot).
+- **Receive only**, about 1.84–2.7 GHz (2.4 GHz ISM is the sweet spot). SPEC
+  and HUNT tune that whole range. Below 2.21 GHz the ESP32 retunes through its
+  experimental 5/6 LO mode, which upstream verified down to 1842 MHz. Besides
+  Wi-Fi, Bluetooth and Zigbee you can see cellular downlinks: LTE/UMTS band 1
+  (2110–2170 MHz), the top of LTE band 3 (to 1880 MHz) and LTE band 7
+  (2620–2690 MHz). The input is matched for 2.4 GHz, so sensitivity drops
+  away from it, but a nearby base station still shows up as flat OFDM bricks.
 - **Levels are in dBFS referred to gain index 50.** Every sample word carries
   the gain index it was taken with (bits 20–27), so SPEC compensates each
   sample even under hardware AGC. From index 36 up, one step is about 0.94 dB.

@@ -46,6 +46,8 @@
 #define BATCH_US 50000        /* captures between redraws on ZIGBEE and HUNT */
 #define DETECT_DB 6.0f        /* burst detection threshold above the floor */
 #define SPEC_BATCH_US 12000   /* snapshots per SPEC frame */
+#define FREQ_MIN 1842u        /* tuning range the UI offers, MHz */
+#define FREQ_MAX 2700u
 #define BW_80 67              /* analog filter per span, MHz */
 #define BW_40 36
 #define BW_16 14
@@ -965,8 +967,10 @@ static void handle_keys(unsigned k) {
         int step = fast ? (int)sv_spans[span].msps / 8 : 1;
         if (k & OG_LEFT) spec_centre -= step;
         if (k & OG_RIGHT) spec_centre += step;
-        if (spec_centre < 2200) spec_centre = 2200;
-        if (spec_centre > 2700) spec_centre = 2700;
+        /* Down to 1842 MHz the ESP32 retunes through its 5/6 LO mode
+         * (upstream-verified there); LTE band 1 and the top of band 3 fit. */
+        if (spec_centre < FREQ_MIN) spec_centre = FREQ_MIN;
+        if (spec_centre > FREQ_MAX) spec_centre = FREQ_MAX;
         if (k & OG_A) {
             span = (span + 1) % SV_SPANS;
             fit_pending = true; /* per-bin noise moves with the bin width */
@@ -995,7 +999,7 @@ static void handle_keys(unsigned k) {
             int d = k & OG_RIGHT ? 1 : -1;
             if (hunt_kind == TGT_ZB) hunt_ch = (hunt_ch - 11 + d + 16) % 16 + 11;
             else if (hunt_kind == TGT_WIFI) hunt_ch = (hunt_ch - 1 + d + 13) % 13 + 1;
-            else hunt_mhz = hunt_mhz + d < 2300 ? 2300 : hunt_mhz + d > 2600 ? 2600 : hunt_mhz + d;
+            else hunt_mhz = hunt_mhz + d < FREQ_MIN ? FREQ_MIN : hunt_mhz + d > FREQ_MAX ? FREQ_MAX : hunt_mhz + d;
             hunt_reset();
         }
         if (k & OG_A) {
