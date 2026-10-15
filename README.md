@@ -81,7 +81,7 @@ esptool -p /dev/ttyUSB0 -b 921600 read-flash 0 0x1000000 odroid-go-backup.bin
 Flash the release image (`esp-sdr-glow-odroid-go-*.bin` from Releases) at offset 0:
 
 ```sh
-esptool -p /dev/ttyUSB0 -b 921600 write-flash 0x0 esp-sdr-glow-odroid-go-v0.1.0.bin
+esptool -p /dev/ttyUSB0 -b 921600 write-flash 0x0 esp-sdr-glow-odroid-go-vX.Y.Z.bin
 ```
 
 (esptool 4.x spells these `read_flash` / `write_flash`.) To go back, write the
