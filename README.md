@@ -50,6 +50,7 @@ screen shows *USB HOST IN CONTROL* until the host has been quiet for 5 s.
 | B held + ← → / ↑ ↓ | GLOW fill per snapshot / fade time |
 | START (release) | Pause |
 | START held + ↑ ↓ / ← → / A | Scale top ±5 dB / range ±10 dB / fit to the signal now |
+| START held + B | LO hops: off → ±1 → ±5 → ±10 MHz |
 | VOLUME | Channel marks: Zigbee → Wi-Fi → off |
 
 | Key | WIFI / ZIGBEE |
@@ -128,6 +129,14 @@ receiver gained a small local-UI API (`sdr_local_*`) in
   shows up as a comb of spurs, so every capture waits for the display DMA to
   finish. The ESP32's own 40 MHz crystal harmonics (2400/2440/2480 MHz) and the
   LO's DC residue are blanked in SPEC and excluded from channel levels.
+- **LO hopping (START + B in SPEC)** separates real signals from receiver
+  artefacts, the way a spectrum analyzer's signal-ID mode does. Each frame
+  the LO lands a random whole number of MHz (up to ±1, ±5 or ±10) away from
+  the centre, and the snapshots are drawn at their true frequencies. Real
+  signals keep their columns and build up in GLOW. Anything tied to the LO,
+  such as DC, IQ images or the comb that the 5/6 LO mode sprouts below
+  2.21 GHz, lands somewhere else every frame and fades. Each hop costs a
+  retune of about 15–20 ms, and the span edges are covered less often.
 - **Battery** percentage comes from a tabulated LiPo curve. The ODROID-GO
   wires its charger status only to the charge LED, so charging cannot be shown.
 - **Opening the serial port resets the board** (DTR/RTS auto-reset), as on most

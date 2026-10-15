@@ -16,6 +16,7 @@
 #include "odroidgo.h"
 #include "burst_serial.h"
 #include "esp_heap_caps.h"
+#include "esp_random.h"
 #include "esp_private/esp_gpio_reserve.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -73,6 +74,13 @@ static bool frozen;
 enum { VIEW_LIVE, VIEW_PEAK, VIEW_GLOW, VIEWS };
 static const char *const view_name[VIEWS] = {"LIVE", "PEAK", "GLOW"};
 static int view = VIEW_GLOW;      /* GLOW by default: the signature view */
+/* SPEC LO hopping: each frame the LO lands a random whole number of MHz off
+ * the centre and the snapshots are drawn at their true frequencies. Real
+ * signals keep their columns; spurs tied to the LO (DC, IQ images, the 5/6
+ * mode's comb) land somewhere else every frame and smear out. */
+static const int hop_mhz[] = {0, 1, 5, 10};
+#define HOPS ((int)(sizeof(hop_mhz) / sizeof(hop_mhz[0])))
+static int hop;
 static int glow_fill = 9;          /* added per snapshot, of 255 */
 static int glow_ms = 1200;         /* fade time constant */
 enum { TGT_ZB, TGT_WIFI, TGT_MHZ, TGTS };
@@ -221,7 +229,7 @@ static int wf_head, spec_frames;
  * fitted once at start and on span changes, otherwise moved only by hand. */
 static int8_t ref = -20, range = 70;
 static bool fit_pending = true;
-static int64_t scale_note_until;
+static int64_t scale_note_until, hop_note_until;
 static uint16_t lut[256];
 /* Persistence intensities. The upper SPEC_H rows live in chunks (the heap is
  * split over several SRAM regions and rarely holds 36 KB in one piece);
@@ -290,19 +298,19 @@ static void glow_add(const float *col) {
 /* The ESP32's own 40 MHz crystal harmonics (2400, 2440, 2480 MHz) and the
  * residue of the LO's DC leak are not on the air: bridge them with the
  * neighbouring bins. A real carrier within 0.25 MHz of them is hidden too. */
-static void blank_spurs(float *db) {
+static void blank_spurs(float *db, unsigned lo) {
     const float bin = (float)sv_spans[span].msps / SV_FFT_N;
     for (int k = 0; k < SV_BINS; k++) {
-        float f = sv_bin_mhz(spec_centre, span, k), h = fabsf(f - 40 * roundf(f / 40));
-        if (h > 0.25f && fabsf(f - spec_centre) > 1.5f * bin) continue;
+        float f = sv_bin_mhz(lo, span, k), h = fabsf(f - 40 * roundf(f / 40));
+        if (h > 0.25f && fabsf(f - lo) > 1.5f * bin) continue;
         int a = k, b = k;
         while (a > 0) {
-            float fa = sv_bin_mhz(spec_centre, span, --a);
-            if (fabsf(fa - 40 * roundf(fa / 40)) > 0.25f && fabsf(fa - spec_centre) > 1.5f * bin) break;
+            float fa = sv_bin_mhz(lo, span, --a);
+            if (fabsf(fa - 40 * roundf(fa / 40)) > 0.25f && fabsf(fa - lo) > 1.5f * bin) break;
         }
         while (b < SV_BINS - 1) {
-            float fb = sv_bin_mhz(spec_centre, span, ++b);
-            if (fabsf(fb - 40 * roundf(fb / 40)) > 0.25f && fabsf(fb - spec_centre) > 1.5f * bin) break;
+            float fb = sv_bin_mhz(lo, span, ++b);
+            if (fabsf(fb - 40 * roundf(fb / 40)) > 0.25f && fabsf(fb - lo) > 1.5f * bin) break;
         }
         db[k] = 0.5f * (db[a] + db[b]);
     }
@@ -379,7 +387,11 @@ static void spec_strip(uint16_t *s, int y0, int h) {
     snprintf(t, sizeof(t), "%u MHz  %u MS/s", spec_centre, sv_spans[span].msps);
     text(s, y0, h, 96, 4, t, C_CYAN, 1);
     text(s, y0, h, W - 26, SPEC_Y + 2, view_name[view], C_DIM, 1);
-    if (frozen) text(s, y0, h, W - 58, SPEC_Y + 2, "HOLD", C_ORANGE, 1);
+    if (hop) {
+        snprintf(t, sizeof(t), "LO~%d", hop_mhz[hop]);
+        text(s, y0, h, W - 32 - 6 * (int)strlen(t), SPEC_Y + 2, t, C_CYAN, 1);
+    }
+    if (frozen) text(s, y0, h, W - 100, SPEC_Y + 2, "HOLD", C_ORANGE, 1);
     const int64_t now = esp_timer_get_time();
     if (glowing && now < tweak_until) {
         snprintf(t, sizeof(t), "fill %d  fade %d.%ds", glow_fill, glow_ms / 1000, glow_ms % 1000 / 100);
@@ -388,6 +400,11 @@ static void spec_strip(uint16_t *s, int y0, int h) {
     if (now < scale_note_until) {
         snprintf(t, sizeof(t), "scale %d .. %d dB", ref - range, ref);
         text(s, y0, h, 40, SPEC_Y + 12, t, C_YELLOW, 1);
+    }
+    if (now < hop_note_until) {
+        if (hop) snprintf(t, sizeof(t), "LO hops +-%d MHz", hop_mhz[hop]);
+        else snprintf(t, sizeof(t), "LO hops off");
+        text(s, y0, h, 40, SPEC_Y + 22, t, C_YELLOW, 1);
     }
     /* Axis: channel numbers above, frequencies below. */
     if (y0 <= axis + 15 && y0 + h > axis) {
@@ -412,12 +429,25 @@ static void spec_frame(void) {
     if (!frozen) {
         sdr_local_set_bandwidth(span_bw(span));
         sdr_local_set_gain(agc ? -1 : manual_gain);
-        sdr_local_tune(spec_centre);
+        int off = 0;
+        if (hop) {
+            const int d = hop_mhz[hop];
+            off = (int)(esp_random() % (unsigned)(2 * d + 1)) - d;
+            if ((int)spec_centre + off < (int)FREQ_MIN) off = (int)FREQ_MIN - (int)spec_centre;
+            if ((int)spec_centre + off > (int)FREQ_MAX) off = (int)FREQ_MAX - (int)spec_centre;
+        }
+        const unsigned lo = spec_centre + off;
+        /* Bins measured around lo, shown around spec_centre. */
+        const int shift = (int)lroundf(off * (float)SV_FFT_N / sv_spans[span].msps);
+        sdr_local_tune(lo);
         og_lcd_idle();
         /* Several snapshots per frame: bursty emitters (a microwave oven pulses
          * at twice the mains frequency) land in at least one. The trace shows
-         * their mean, the hold and the waterfall their maximum. */
-        static float bins[SV_BINS], col[W], mean[W], peak[W];
+         * their mean, the hold and the waterfall their maximum. Columns a
+         * hopped LO did not reach this frame stay as they were. */
+        static float bins[SV_BINS], moved[SV_BINS], col[W], mean[W], peak[W];
+        static uint8_t seen[W];
+        for (int x = 0; x < W; x++) {mean[x] = 0; peak[x] = -INFINITY; seen[x] = 0;}
         int got = 0;
         int64_t t0 = esp_timer_get_time();
         if (glowing) glow_fade(t0);
@@ -425,20 +455,32 @@ static void spec_frame(void) {
             const float *db = sv_measure(span, true);
             if (!db) break;
             memcpy(bins, db, sizeof(bins));
-            blank_spurs(bins);
-            sv_resample_max(bins, SV_BINS, col, W);
-            if (glowing && !fit_pending) glow_add(col);
+            blank_spurs(bins, lo);
+            const float *at = bins;
+            if (shift) {
+                for (int j = 0; j < SV_BINS; j++) {
+                    int k = j - shift;
+                    moved[j] = k >= 0 && k < SV_BINS ? bins[k] : -INFINITY;
+                }
+                at = moved;
+            }
+            sv_resample_max(at, SV_BINS, col, W);
+            if (glowing && !fit_pending) glow_add(col); /* -inf columns add nothing */
             for (int x = 0; x < W; x++) {
-                mean[x] = got ? mean[x] + col[x] : col[x];
-                peak[x] = got && peak[x] > col[x] ? peak[x] : col[x];
+                if (!(col[x] > -1e30f)) continue;
+                mean[x] += col[x];
+                seen[x]++;
+                if (col[x] > peak[x]) peak[x] = col[x];
             }
             got++;
         } while (esp_timer_get_time() - t0 < SPEC_BATCH_US && got < 8);
         capture_failed = !got;
         if (got) {
             for (int x = 0; x < W; x++) {
-                float m = mean[x] / got;
-                cur[x] = spec_frames ? 0.5f * cur[x] + 0.5f * m : m;
+                if (seen[x]) {
+                    float m = mean[x] / seen[x];
+                    cur[x] = spec_frames ? 0.5f * cur[x] + 0.5f * m : m;
+                }
                 hold[x] = spec_frames && hold[x] - 0.4f > peak[x] ? hold[x] - 0.4f : peak[x];
             }
             if (fit_pending) {
@@ -468,6 +510,7 @@ static void spec_frame(void) {
 static void spec_retuned(void) {
     spec_layout();
     spec_frames = 0;
+    for (int x = 0; x < W; x++) cur[x] = hold[x] = -200;
     memset(wf, 0, WF_ROWS * W);
     glow_clear();
 }
@@ -827,7 +870,7 @@ static void splash_strip(uint16_t *s, int y0, int h) {
         "B       SPEC, WIFI/ZB: view     HUNT: tone",
         "B+pad   GLOW: <- -> fill   UP DOWN fade",
         "START   SPEC: pause   WIFI/ZB, HUNT: reset",
-        "START+  scale: UP/DOWN top  <-/-> range  A fit",
+        "START+  UP/DN top <-/-> range A fit B LO hops",
         "SELECT  SPEC: AGC   other pages: auto gain",
         "VOLUME  SPEC: marks  WIFI<->ZB  HUNT: sound",
         "",
@@ -908,14 +951,22 @@ static unsigned glow_keys(unsigned k) {
     return k & ~OG_B;
 }
 
-/* SPEC: START acts on release (pause); held, the D-pad moves the fixed scale
- * and A fits it to the current signal. */
+/* SPEC: START acts on release (pause); held, the D-pad moves the fixed scale,
+ * A fits it to the current signal and B cycles the LO hopping. */
+static bool start_chord;
 static unsigned scale_keys(unsigned k) {
-    static bool chord;
     const unsigned pad = OG_UP | OG_DOWN | OG_LEFT | OG_RIGHT;
-    if (k & OG_START) chord = false;
+    if (k & OG_START) start_chord = false;
+    if ((held_prev & OG_START) && (k & OG_B)) {
+        start_chord = true;
+        hop = (hop + 1) % HOPS;
+        hop_note_until = esp_timer_get_time() + 2500000;
+        glow_clear();
+        swallow |= OG_B; /* its release must not change the view */
+        k &= ~OG_B;
+    }
     if ((held_prev & OG_START) && (k & (pad | OG_A))) {
-        chord = true;
+        start_chord = true;
         int r = ref, g = range;
         if (k & OG_UP) r += 5;
         if (k & OG_DOWN) r -= 5;
@@ -927,12 +978,12 @@ static unsigned scale_keys(unsigned k) {
         scale_note_until = esp_timer_get_time() + 2500000;
         k &= ~(pad | OG_A);
     }
-    if ((released & OG_START) && !chord) frozen = !frozen;
+    if ((released & OG_START) && !start_chord) frozen = !frozen;
     return k & ~OG_START;
 }
 
 static void handle_keys(unsigned k) {
-    if (page == PAGE_SPEC) k = scale_keys(glow_keys(k));
+    if (page == PAGE_SPEC) k = glow_keys(scale_keys(k));
     else if (page == PAGE_WIFI || page == PAGE_ZB) k = glow_keys(k);
     if (k & OG_MENU) {
         /* SPEC -> WIFI/ZIGBEE (whichever was last) -> HUNT. */
