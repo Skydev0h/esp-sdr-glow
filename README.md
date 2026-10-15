@@ -129,6 +129,12 @@ receiver gained a small local-UI API (`sdr_local_*`) in
   shows up as a comb of spurs, so every capture waits for the display DMA to
   finish. The ESP32's own 40 MHz crystal harmonics (2400/2440/2480 MHz) and the
   LO's DC residue are blanked in SPEC and excluded from channel levels.
+- **Ghosts in the radio dark forest.** Below 2.21 GHz the ESP32's synthesizer
+  runs in its experimental 5/6 mode and sprouts faint blue ghosts that blink
+  out of the dark. One is a comb of lines that follows the centre frequency.
+  Another is a hump that runs away about 3.5 times faster than you tune and
+  has a mirror twin. They are the receiver's own, not something on the air.
+  GLOW makes them easy to spot, and LO hopping makes them fade.
 - **LO hopping (START + B in SPEC)** separates real signals from receiver
   artefacts, the way a spectrum analyzer's signal-ID mode does. Each frame
   the LO lands a random whole number of MHz (up to ±1, ±5 or ±10) away from
