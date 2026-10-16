@@ -226,6 +226,11 @@ static uint16_t col_bg[W];
 static uint8_t col_mark[W]; /* channel number whose centre falls in the column */
 static uint8_t *wf;
 static int wf_head, spec_frames;
+/* Waterfall smoothing: each shown row is the mean (in dB, as LUT indices are
+ * linear in dB) of the last wf_avg frames, still one row per frame. */
+#define WF_AVG_MAX 4
+static uint8_t wf_raw[WF_AVG_MAX][W];
+static int wf_raw_head, wf_raw_n, wf_avg = 1;
 static uint8_t wf_got[WF_ROWS];   /* diagnostics: snapshots behind each waterfall row */
 static int16_t wf_db10[WF_ROWS];  /* diagnostics: row mean level, 0.1 dB */
 static unsigned spec_snap_us, spec_frame_us; /* diagnostics: one snapshot incl. drawing prep, one frame */
@@ -411,6 +416,10 @@ static void spec_strip(uint16_t *s, int y0, int h) {
         else snprintf(t, sizeof(t), "LO hops off");
         text(s, y0, h, 40, SPEC_Y + 22, t, C_YELLOW, 1);
     }
+    if (!glowing && wf_avg > 1) {
+        snprintf(t, sizeof(t), "WF/%d", wf_avg);
+        text(s, y0, h, 2, axis + 18, t, C_WHITE, 1);
+    }
     /* Axis: channel numbers above, frequencies below. */
     if (y0 <= axis + 15 && y0 + h > axis) {
         int last = -100;
@@ -496,12 +505,18 @@ static void spec_frame(void) {
             }
             if (!glowing) {
                 wf_head = (wf_head + 1) % WF_ROWS;
-                uint8_t *line = wf + wf_head * W;
+                wf_raw_head = (wf_raw_head + 1) % WF_AVG_MAX;
+                if (wf_raw_n < WF_AVG_MAX) wf_raw_n++;
+                uint8_t *raw = wf_raw[wf_raw_head], *line = wf + wf_head * W;
+                const int k = wf_avg < wf_raw_n ? wf_avg : wf_raw_n;
                 float sum = 0;
                 int n = 0;
                 for (int x = 0; x < W; x++) {
                     float v = (peak[x] - (ref - range)) * 255 / range;
-                    line[x] = v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v;
+                    raw[x] = v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v;
+                    unsigned a = 0;
+                    for (int j = 0; j < k; j++) a += wf_raw[(wf_raw_head - j + WF_AVG_MAX) % WF_AVG_MAX][x];
+                    line[x] = (uint8_t)((a + k / 2) / k);
                     if (peak[x] > -1e30f) {sum += peak[x]; n++;}
                 }
                 wf_got[wf_head] = (uint8_t)got;
@@ -524,6 +539,7 @@ static void spec_frame(void) {
 static void spec_retuned(void) {
     spec_layout();
     spec_frames = 0;
+    wf_raw_n = 0;
     for (int x = 0; x < W; x++) cur[x] = hold[x] = -200;
     memset(wf, 0, WF_ROWS * W);
     glow_clear();
@@ -885,6 +901,7 @@ static void splash_strip(uint16_t *s, int y0, int h) {
         "B+pad   GLOW: <- -> fill   UP DOWN fade",
         "START   SPEC: pause   WIFI/ZB, HUNT: reset",
         "START+  UP/DN top <-/-> range A fit B LO hops",
+        "START+VOLUME  waterfall average 1/2/3/4 frames",
         "SELECT  SPEC: AGC   other pages: auto gain",
         "VOLUME  SPEC: marks  WIFI<->ZB  HUNT: sound",
         "",
@@ -971,6 +988,11 @@ static bool start_chord;
 static unsigned scale_keys(unsigned k) {
     const unsigned pad = OG_UP | OG_DOWN | OG_LEFT | OG_RIGHT;
     if (k & OG_START) start_chord = false;
+    if ((held_prev & OG_START) && (k & OG_VOLUME)) {
+        start_chord = true;
+        wf_avg = wf_avg % WF_AVG_MAX + 1;
+        k &= ~OG_VOLUME;
+    }
     if ((held_prev & OG_START) && (k & OG_B)) {
         start_chord = true;
         hop = (hop + 1) % HOPS;
@@ -1136,9 +1158,10 @@ bool board_ui_command(const char *line) {
         burst_serial_send("END\n", 4);
         return true;
     }
-    int v, g;
-    if (sscanf(line, "OGSPEC %d %d", &v, &g) == 2 && v >= 0 && v < VIEWS) {
+    int v, g, a = 0;
+    if (sscanf(line, "OGSPEC %d %d %d", &v, &g, &a) >= 2 && v >= 0 && v < VIEWS) {
         page = PAGE_SPEC;
+        if (a >= 1 && a <= WF_AVG_MAX) wf_avg = a;
         view = v;
         agc = g < 0;
         if (g >= 0) manual_gain = g;

@@ -51,6 +51,7 @@ screen shows *USB HOST IN CONTROL* until the host has been quiet for 5 s.
 | START (release) | Pause |
 | START held + ↑ ↓ / ← → / A | Scale top ±5 dB / range ±10 dB / fit to the signal now |
 | START held + B | LO hops: off → ±1 → ±5 → ±10 MHz |
+| START held + VOLUME | Waterfall average over the last 1 / 2 / 3 / 4 frames (one row per frame) |
 | VOLUME | Channel marks: Zigbee → Wi-Fi → off |
 
 | Key | WIFI / ZIGBEE |
