@@ -28,7 +28,8 @@ bool zb_init(void) {
     scratch = malloc(N * sizeof(float));
     seg = malloc(ZB_MAX_BANDS * MAX_SEGMENTS * sizeof(float));
     if (!(buf && win && avg && scratch && seg)) return false;
-    if (dsps_fft2r_init_fc32(NULL, N) != ESP_OK) return false;
+    /* One twiddle table for every FFT user; SPEC needs 512 points. */
+    if (dsps_fft2r_init_fc32(NULL, 512) != ESP_OK) return false;
     float sum = 0;
     for (int n = 0; n < N; n++) {
         win[n] = 0.5f - 0.5f * cosf(2 * (float)M_PI * n / N);

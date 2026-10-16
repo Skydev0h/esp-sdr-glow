@@ -148,7 +148,14 @@ receiver gained a small local-UI API (`sdr_local_*`) in
 - **Opening the serial port resets the board** (DTR/RTS auto-reset), as on most
   ESP32 boards.
 - Diagnostics over the serial protocol: `OGSTAT?` reports the UI state.
-  `OGSET <page> <tone> <kind> <ch>` sets HUNT up remotely.
+  `OGSET <page> <tone> <kind> <ch>` sets HUNT up remotely, and
+  `OGSPEC <view> <gain|-1>` sets SPEC up. `OGWF?` dumps per-row waterfall
+  statistics and SPEC timings: capture, sample prep, FFT, log and frame.
+- **Time coverage.** At 80 MS/s the CPU needs about 260 µs of FFT work for
+  every 6.4 µs of air, so SPEC sees roughly 2–3 % of the time at the full
+  span. One waterfall row takes up to 16 snapshots in 30 ms, about 0.4 ms of
+  air. That is why bursty Wi-Fi gives the waterfall horizontal stripes. The
+  16 MS/s span sees five times more air per row.
 
 ## Credits
 

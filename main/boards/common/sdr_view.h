@@ -34,6 +34,8 @@ typedef struct { unsigned divider, msps; } sv_span_t;
 extern const sv_span_t sv_spans[SV_SPANS]; /* 80, 40, 16 MS/s */
 
 bool sv_init(void);
+/* Diagnostics: duration of the last capture and of the last whole measurement. */
+extern unsigned sv_capture_us, sv_measure_us, sv_prep_us, sv_fft_us, sv_log_us;
 /* dBFS per bin (heap buffer, valid until the next call), NULL if the capture failed. */
 const float *sv_measure(unsigned span, bool dc_fix);
 /* Bin (fractional, 0..SV_BINS-1) <-> MHz for a view centred on centre_mhz. */

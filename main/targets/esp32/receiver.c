@@ -108,7 +108,14 @@ static bool acquire_iq(unsigned n, unsigned source, unsigned clock, unsigned *ca
     }
     if (rx_recalibration_stale()) prepare_rx();
     REG_WRITE(DUMP_CTRL, 0);
-    for (unsigned j = 0; j < CAPACITY; j++) samples[j] = SENTINEL;
+    /* Host captures guard the whole aperture; the board UI's frequent short
+     * ones only the requested words plus a margin (a full 64 KiB fill and
+     * check costs about 1 ms per capture). */
+    unsigned guard = CAPACITY;
+#if CONFIG_ESP_SDR_LOCAL_UI
+    if (local_call && n + 64 < CAPACITY) guard = n + 64;
+#endif
+    for (unsigned j = 0; j < guard; j++) samples[j] = SENTINEL;
     filter_apply();
     uint32_t owner = DPORT_REG_READ(DPORT_IRAM_DRAM_AHB_SEL_REG);
     uint32_t byte_select = REG_READ(DUMP_BYTES);
@@ -132,7 +139,7 @@ static bool acquire_iq(unsigned n, unsigned source, unsigned clock, unsigned *ca
         reply("ERR capture_timeout\n");
         return false;
     }
-    for (unsigned j = 0; j < CAPACITY; j++) {
+    for (unsigned j = 0; j < guard; j++) {
         if ((j < n && samples[j] == SENTINEL) || (j >= n && samples[j] != SENTINEL)) {
             reply("ERR capture_memory %u\n", j);
             return false;

@@ -1,9 +1,12 @@
 /* Shared on-device spectrum measurement and drawing helpers (see sdr_view.h).
  * From fedaykinofdune/CardputerADV-SDR (GPL-3.0); esp-sdr-glow adds the
  * overridable geometry and per-sample gain compensation. */
+#include <malloc.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsps_fft2r.h"
+#include "esp_timer.h"
 #include "sdr_view.h"
 #include "sdr_local.h"
 #include "font5x7.h"
@@ -11,8 +14,12 @@
 #define BIN0 ((SV_FFT_N - SV_BINS) / 2)
 
 const sv_span_t sv_spans[SV_SPANS] = {{0, 80}, {1, 40}, {6, 16}};
+unsigned sv_capture_us, sv_measure_us, sv_prep_us, sv_fft_us, sv_log_us;
 
-static float *win, *re, *im, *tw_re, *tw_im, *acc, *out;
+/* cbuf: interleaved re/im for the esp-dsp radix-2 FFT (ae32 assembly on the
+ * ESP32, several times faster than plain C), which shares one twiddle table
+ * of at least SV_FFT_N points with every other user of it. */
+static float *win, *cbuf, *acc, *out;
 #ifdef SV_GAIN_COMP
 /* Bits 20-27 of every word hold the gain index that sample was taken with;
  * under hardware AGC it changes inside a capture. Each sample is scaled to
@@ -26,10 +33,10 @@ static float gain_k[256];
 bool sv_init(void) {
     if (win) return true;
     size_t f = SV_FFT_N * sizeof(float);
-    win = malloc(f); re = malloc(f); im = malloc(f); acc = malloc(f);
-    tw_re = malloc(f / 2); tw_im = malloc(f / 2);
-    if (!(win && re && im && acc && tw_re && tw_im)) return false;
-    out = im; /* free once the FFTs are done; the heap is tight */
+    win = malloc(f); acc = malloc(f); out = malloc(SV_BINS * sizeof(float));
+    cbuf = memalign(16, 2 * f);
+    if (!(win && acc && out && cbuf)) return false;
+    if (dsps_fft2r_init_fc32(NULL, SV_FFT_N) != ESP_OK) return false;
     _Static_assert(SV_BINS <= SV_FFT_N, "output fits the FFT buffer");
     float sum = 0;
     for (int n = 0; n < SV_FFT_N; n++) {
@@ -38,10 +45,6 @@ bool sv_init(void) {
     }
     /* Normalise so a full-scale tone reads 0 dBFS (10-bit samples). */
     for (int n = 0; n < SV_FFT_N; n++) win[n] /= sum * 512.0f;
-    for (int k = 0; k < SV_FFT_N / 2; k++) {
-        tw_re[k] = cosf(2 * (float)M_PI * k / SV_FFT_N);
-        tw_im[k] = -sinf(2 * (float)M_PI * k / SV_FFT_N);
-    }
 #ifdef SV_GAIN_COMP
     for (int g = 0; g < 256; g++)
         gain_k[g] = powf(10, -SV_GAIN_DB_STEP * ((g < SV_GAIN_MIN ? SV_GAIN_MIN : g) - SV_GAIN_REF) / 20);
@@ -49,35 +52,27 @@ bool sv_init(void) {
     return true;
 }
 
-static void fft(void) {
-    for (unsigned i = 1, j = 0; i < SV_FFT_N; i++) {
-        unsigned bit = SV_FFT_N >> 1;
-        for (; j & bit; bit >>= 1) j ^= bit;
-        j ^= bit;
-        if (i < j) {
-            float t = re[i]; re[i] = re[j]; re[j] = t;
-            t = im[i]; im[i] = im[j]; im[j] = t;
-        }
-    }
-    for (unsigned len = 2; len <= SV_FFT_N; len <<= 1) {
-        unsigned half = len >> 1, stride = SV_FFT_N / len;
-        for (unsigned i = 0; i < SV_FFT_N; i += len)
-            for (unsigned k = 0; k < half; k++) {
-                float wr = tw_re[k * stride], wi = tw_im[k * stride];
-                unsigned a = i + k, b = a + half;
-                float tr = re[b] * wr - im[b] * wi, ti = re[b] * wi + im[b] * wr;
-                re[b] = re[a] - tr; im[b] = im[a] - ti;
-                re[a] += tr; im[a] += ti;
-            }
-    }
-}
 static inline int s10(uint32_t v) { return (int)(v << 22) >> 22; }
 
+/* 10*log10(x) from the float's exponent plus a quadratic in the mantissa:
+ * within about 0.02 dB, a fraction of log10f's cost (480 calls a snapshot). */
+static inline float fast_db(float x) {
+    union { float f; uint32_t i; } v = {x};
+    const float e = (float)((int)(v.i >> 23) - 127);
+    v.i = (v.i & 0x7fffffu) | 0x3f800000u;
+    const float m = v.f;
+    return 3.0103f * (e + (-0.34484843f * m + 2.02466578f) * m - 0.67487759f);
+}
+
 const float *sv_measure(unsigned span, bool dc_fix) {
+    const int64_t t0 = esp_timer_get_time();
     const uint32_t *w = sdr_local_capture(SV_FFT_N * SV_SEGMENTS, sv_spans[span].divider);
+    sv_capture_us = (unsigned)(esp_timer_get_time() - t0);
     if (!w) return NULL;
     memset(acc, 0, SV_FFT_N * sizeof(float));
+    int64_t prep = 0, fft = 0, ta;
     for (int s = 0; s < SV_SEGMENTS; s++) {
+        ta = esp_timer_get_time();
         const uint32_t *p = w + s * SV_FFT_N;
         /* The LO leaks a DC offset; removing each segment's mean takes it
          * out. Wideband signals at the centre survive, but a carrier within
@@ -87,23 +82,33 @@ const float *sv_measure(unsigned span, bool dc_fix) {
             /* Conjugate: RF above the LO arrives at negative frequency
              * (the web viewer conjugates every target the same way). */
             const float k = GAIN_K(p[n]);
-            re[n] = s10(p[n]) * k;
-            im[n] = -s10(p[n] >> 10) * k;
-            si += re[n];
-            sq += im[n];
+            const float i = s10(p[n]) * k, q = -s10(p[n] >> 10) * k;
+            cbuf[2 * n] = i;
+            cbuf[2 * n + 1] = q;
+            si += i;
+            sq += q;
         }
         const float mi = dc_fix ? si / SV_FFT_N : 0, mq = dc_fix ? sq / SV_FFT_N : 0;
         for (int n = 0; n < SV_FFT_N; n++) {
-            re[n] = (re[n] - mi) * win[n];
-            im[n] = (im[n] - mq) * win[n];
+            cbuf[2 * n] = (cbuf[2 * n] - mi) * win[n];
+            cbuf[2 * n + 1] = (cbuf[2 * n + 1] - mq) * win[n];
         }
-        fft();
-        for (int k = 0; k < SV_FFT_N; k++) acc[k] += re[k] * re[k] + im[k] * im[k];
+        const int64_t tb = esp_timer_get_time();
+        prep += tb - ta;
+        dsps_fft2r_fc32(cbuf, SV_FFT_N);
+        dsps_bit_rev_fc32(cbuf, SV_FFT_N);
+        fft += esp_timer_get_time() - tb;
+        for (int k = 0; k < SV_FFT_N; k++) acc[k] += cbuf[2 * k] * cbuf[2 * k] + cbuf[2 * k + 1] * cbuf[2 * k + 1];
     }
+    ta = esp_timer_get_time();
+    sv_prep_us = (unsigned)prep;
+    sv_fft_us = (unsigned)fft;
     for (int x = 0; x < SV_BINS; x++) {
         int k = (x + BIN0 + SV_FFT_N / 2) & (SV_FFT_N - 1); /* fftshift */
-        out[x] = 10 * log10f(acc[k] / SV_SEGMENTS + 1e-12f);
+        out[x] = fast_db(acc[k] / SV_SEGMENTS + 1e-12f);
     }
+    sv_log_us = (unsigned)(esp_timer_get_time() - ta);
+    sv_measure_us = (unsigned)(esp_timer_get_time() - t0);
     return out;
 }
 

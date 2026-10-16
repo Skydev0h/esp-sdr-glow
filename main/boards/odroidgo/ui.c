@@ -46,7 +46,8 @@
 #define CAP_N 16128u          /* 63 x 256: ~0.2 ms at 80 MS/s, ~1 ms at 16 MS/s */
 #define BATCH_US 50000        /* captures between redraws on ZIGBEE and HUNT */
 #define DETECT_DB 6.0f        /* burst detection threshold above the floor */
-#define SPEC_BATCH_US 12000   /* snapshots per SPEC frame */
+#define SPEC_BATCH_US 30000   /* snapshots per SPEC frame: more air per waterfall row */
+#define SPEC_MAX_SNAPS 16
 #define FREQ_MIN 1842u        /* tuning range the UI offers, MHz */
 #define FREQ_MAX 2700u
 #define BW_80 67              /* analog filter per span, MHz */
@@ -225,6 +226,10 @@ static uint16_t col_bg[W];
 static uint8_t col_mark[W]; /* channel number whose centre falls in the column */
 static uint8_t *wf;
 static int wf_head, spec_frames;
+static uint8_t wf_got[WF_ROWS];   /* diagnostics: snapshots behind each waterfall row */
+static int16_t wf_db10[WF_ROWS];  /* diagnostics: row mean level, 0.1 dB */
+static unsigned spec_snap_us, spec_frame_us; /* diagnostics: one snapshot incl. drawing prep, one frame */
+static int64_t spec_frame_at;
 /* Fixed scale, dBFS at gain 50 (sdr_view.c compensates every sample's gain):
  * fitted once at start and on span changes, otherwise moved only by hand. */
 static int8_t ref = -20, range = 70;
@@ -473,7 +478,8 @@ static void spec_frame(void) {
                 if (col[x] > peak[x]) peak[x] = col[x];
             }
             got++;
-        } while (esp_timer_get_time() - t0 < SPEC_BATCH_US && got < 8);
+            spec_snap_us = (unsigned)((esp_timer_get_time() - t0) / got);
+        } while (esp_timer_get_time() - t0 < SPEC_BATCH_US && got < SPEC_MAX_SNAPS);
         capture_failed = !got;
         if (got) {
             for (int x = 0; x < W; x++) {
@@ -491,10 +497,15 @@ static void spec_frame(void) {
             if (!glowing) {
                 wf_head = (wf_head + 1) % WF_ROWS;
                 uint8_t *line = wf + wf_head * W;
+                float sum = 0;
+                int n = 0;
                 for (int x = 0; x < W; x++) {
                     float v = (peak[x] - (ref - range)) * 255 / range;
                     line[x] = v < 0 ? 0 : v > 255 ? 255 : (uint8_t)v;
+                    if (peak[x] > -1e30f) {sum += peak[x]; n++;}
                 }
+                wf_got[wf_head] = (uint8_t)got;
+                wf_db10[wf_head] = n ? (int16_t)(sum / n * 10) : -9999;
             }
             spec_frames++;
         }
@@ -505,6 +516,9 @@ static void spec_frame(void) {
         hold_row[x] = (int16_t)(p < 0 ? 0 : p > SPEC_H - 1 ? SPEC_H - 1 : p);
     }
     render(spec_strip, 0, H);
+    const int64_t now = esp_timer_get_time();
+    spec_frame_us = spec_frame_at ? (unsigned)(now - spec_frame_at) : 0;
+    spec_frame_at = now;
 }
 
 static void spec_retuned(void) {
@@ -1105,6 +1119,31 @@ bool board_ui_command(const char *line) {
             og_tone_hz(), hunt_now, hunt_env, hunt_ref, manual_gain, auto_gain, clip_rate,
             (unsigned)esp_get_free_heap_size());
         burst_serial_send(buf, n);
+        return true;
+    }
+    if (!strcmp(line, "OGWF?")) {
+        /* Newest row first: snapshots, mean of the row's peaks (dB), mean LUT index. */
+        int n = snprintf(buf, sizeof(buf), "OGWF ref %d range %d view %d gain %d agc %d capture %u us prep %u fft %u log %u measure %u us snapshot %u us frame %u us\n",
+                         ref, range, view, manual_gain, agc, sv_capture_us, sv_prep_us, sv_fft_us, sv_log_us, sv_measure_us, spec_snap_us, spec_frame_us);
+        burst_serial_send(buf, n);
+        for (int i = 0; i < WF_ROWS; i++) {
+            int r = (wf_head - i + WF_ROWS) % WF_ROWS;
+            unsigned lut_sum = 0;
+            for (int x = 0; x < W; x++) lut_sum += wf[r * W + x];
+            n = snprintf(buf, sizeof(buf), "%d %u %.1f %u\n", i, wf_got[r], wf_db10[r] / 10.0, lut_sum / W);
+            burst_serial_send(buf, n);
+        }
+        burst_serial_send("END\n", 4);
+        return true;
+    }
+    int v, g;
+    if (sscanf(line, "OGSPEC %d %d", &v, &g) == 2 && v >= 0 && v < VIEWS) {
+        page = PAGE_SPEC;
+        view = v;
+        agc = g < 0;
+        if (g >= 0) manual_gain = g;
+        splash_until = 0;
+        burst_serial_send("OK\n", 3);
         return true;
     }
     if (sscanf(line, "OGSET %d %d %d %d", &pg, &tm, &kind, &ch) == 4 && pg >= 0 && pg < PAGES &&
