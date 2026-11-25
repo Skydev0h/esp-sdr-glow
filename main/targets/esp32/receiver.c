@@ -39,6 +39,8 @@ SOC_RESERVE_MEMORY_REGION(0x3ffe8000, 0x3fff8000, esp32_rf_dump);
 #define DUMP_STATUS 0x60033d94u
 #define DUMP_BYTES 0x60033dc4u
 #define RX_GAIN 0x3ff5c02cu
+#define ADC_CTRL 0x3ff460a0u
+#define ADC_ON_FORCE (BIT(9) | BIT(8)) /* Force-enable and ADC-on value. */
 #define CAPACITY 16384u
 #define MAX_SAMPLES (CAPACITY - 4)
 #define SENTINEL 0xa55aa55au
@@ -88,14 +90,14 @@ static void reply(const char *fmt, ...) {
 static void tune_rx(unsigned mhz);
 static void apply_gain(void);
 static void prepare_rx(void) {
-    if (rx_recalibration_stale()) {
-        tune_rx(frequency_mhz);
-        apply_gain();
-    }
+    if (rx_recalibration_stale()) tune_rx(frequency_mhz);
     rom_pbus_workmode();
     rom_pbus_xpd_tx_off();
     rom_pbus_xpd_rx_on(1);
     rom_set_rxclk_en(1);
+    /* PBUS work-mode setup releases a forced RX gain; apply it afterwards
+     * (upstream e342444). */
+    apply_gain();
     if(rx_lo_select(rx_lo_plan(frequency_mhz).alternate))esp_rom_delay_us(3000);
 }
 
@@ -117,6 +119,12 @@ static bool acquire_iq(unsigned n, unsigned source, unsigned clock, unsigned *ca
 #endif
     for (unsigned j = 0; j < guard; j++) samples[j] = SENTINEL;
     filter_apply();
+    /* RX clock forcing alone does not keep the ADC on. PHY gating otherwise
+     * inserts short runs of the inactive converter's fixed I/Q value
+     * (upstream 0df9857, issue #22). */
+    uint32_t adc_on = DPORT_REG_READ(ADC_CTRL) & ADC_ON_FORCE;
+    DPORT_REG_WRITE(ADC_CTRL, DPORT_REG_READ(ADC_CTRL) | ADC_ON_FORCE);
+    esp_rom_delay_us(2);
     uint32_t owner = DPORT_REG_READ(DPORT_IRAM_DRAM_AHB_SEL_REG);
     uint32_t byte_select = REG_READ(DUMP_BYTES);
     DPORT_REG_WRITE(DPORT_IRAM_DRAM_AHB_SEL_REG,
@@ -134,6 +142,7 @@ static bool acquire_iq(unsigned n, unsigned source, unsigned clock, unsigned *ca
     esp_rom_delay_us(10);
     DPORT_REG_WRITE(DPORT_IRAM_DRAM_AHB_SEL_REG, owner);
     REG_WRITE(DUMP_BYTES, byte_select);
+    DPORT_REG_WRITE(ADC_CTRL, (DPORT_REG_READ(ADC_CTRL) & ~ADC_ON_FORCE) | adc_on);
     filter_restore();
     if (!(result & BIT(18)) || (status & 0x7fff) != n) {
         reply("ERR capture_timeout\n");
