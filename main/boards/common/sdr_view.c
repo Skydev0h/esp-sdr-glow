@@ -21,11 +21,13 @@ unsigned sv_capture_us, sv_measure_us, sv_prep_us, sv_fft_us, sv_log_us;
  * of at least SV_FFT_N points with every other user of it. */
 static float *win, *cbuf, *acc, *out;
 #ifdef SV_GAIN_COMP
-/* Bits 20-27 of every word hold the gain index that sample was taken with;
+/* Bits 20-26 of every word hold the gain index that sample was taken with;
  * under hardware AGC it changes inside a capture. Each sample is scaled to
- * SV_GAIN_REF, so levels stay comparable whatever the AGC does. */
-static float gain_k[256];
-#define GAIN_K(word) gain_k[((word) >> 20) & 0xff]
+ * SV_GAIN_REF, so levels stay comparable whatever the AGC does. Bit 27 is a
+ * PHY flag, not gain: set on runs of 1 or 8-9 samples inside strong bursts
+ * (measured on the ODROID-GO's ESP32 at fixed manual gains). */
+static float gain_k[128];
+#define GAIN_K(word) gain_k[((word) >> 20) & 0x7f]
 #else
 #define GAIN_K(word) 1.0f
 #endif
@@ -46,7 +48,7 @@ bool sv_init(void) {
     /* Normalise so a full-scale tone reads 0 dBFS (10-bit samples). */
     for (int n = 0; n < SV_FFT_N; n++) win[n] /= sum * 512.0f;
 #ifdef SV_GAIN_COMP
-    for (int g = 0; g < 256; g++)
+    for (int g = 0; g < 128; g++)
         gain_k[g] = powf(10, -SV_GAIN_DB_STEP * ((g < SV_GAIN_MIN ? SV_GAIN_MIN : g) - SV_GAIN_REF) / 20);
 #endif
     return true;
