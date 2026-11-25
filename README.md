@@ -41,6 +41,7 @@ screen shows *USB HOST IN CONTROL* until the host has been quiet for 5 s.
 | MENU | Page: SPEC → WIFI/ZIGBEE → HUNT |
 | ↑ ↓ | Gain (hold > 1 s for steps of 4) |
 | SELECT | SPEC: hardware AGC on/off. Other pages: auto-ranging on/off |
+| MENU held while switching on | [Wireless update](#wireless-updates) mode |
 
 | Key | SPEC |
 | --- | --- |
@@ -80,7 +81,8 @@ switch on:
 esptool -p /dev/ttyUSB0 -b 921600 read-flash 0 0x1000000 odroid-go-backup.bin
 ```
 
-Flash the release image (`esp-sdr-glow-odroid-go-*.bin` from Releases) at offset 0:
+Flash the full release image (`esp-sdr-glow-odroid-go-vX.Y.Z.bin` from
+Releases, not the `-app.bin` one) at offset 0:
 
 ```sh
 esptool -p /dev/ttyUSB0 -b 921600 write-flash 0x0 esp-sdr-glow-odroid-go-vX.Y.Z.bin
@@ -88,6 +90,53 @@ esptool -p /dev/ttyUSB0 -b 921600 write-flash 0x0 esp-sdr-glow-odroid-go-vX.Y.Z.
 
 (esptool 4.x spells these `read_flash` / `write_flash`.) To go back, write the
 backup the same way: `write-flash 0x0 odroid-go-backup.bin`.
+
+Coming from v0.1.2 or older, flash the full image once by cable: v0.1.3
+switched to two app slots for wireless updates. Writing the full image also
+clears the stored Wi-Fi network. Holding VOLUME while switching on puts the
+ESP32 into its serial download mode (it sits on GPIO0), so nothing starts
+until the next power cycle. That is the ROM's rescue path, not a bug.
+
+### Wireless updates
+
+After that one cable flash, new versions can go over Wi-Fi.
+
+1. Store the network once, over USB (2 Mbaud; opening the port resets the
+   board, hence the pause), for example with pyserial:
+
+   ```sh
+   python3 - <<'EOF'
+   import serial, time
+   s = serial.Serial(); s.port, s.baudrate, s.timeout = '/dev/ttyUSB0', 2000000, 2
+   s.dtr = s.rts = False; s.open(); time.sleep(2); s.reset_input_buffer()
+   for c in ('OGWIFI MyNetwork', 'OGWIPW my-password', 'OGWIFI?'):
+       s.write(c.encode() + b'\n')
+       for _ in range(10):
+           r = s.readline().decode(errors='replace').strip('\0 \r\n')
+           if r: break
+       print(c.split()[0], '->', r)
+   EOF
+   ```
+
+   `OGWIFI?` answers with the SSID and whether a password is set. It never
+   prints the password back.
+2. Switch the ODROID-GO on with MENU held. Instead of the receiver it shows
+   *OTA UPDATE*, joins the network and shows its address.
+3. Send the app image (`esp_sdr.bin` from a build, or the release's
+   `…-app.bin`, not the full image):
+
+   ```sh
+   curl --data-binary @esp-sdr-glow-odroid-go-vX.Y.Z-app.bin http://<address>/ota
+   ```
+
+   It goes into the other slot, is checked and the GO restarts into it. If the
+   new image resets before its UI starts, the bootloader rolls back to the
+   previous one. B leaves the update screen without changes.
+
+While the update screen is up it broadcasts `esp-sdr-glow <ip> <version>
+<slot> <build time>` to UDP port 3232 once a second, so a script can find it.
+Anyone on the same network can send an image during that time; outside the
+update screen the GO has no network at all.
 
 ### Build it yourself
 
@@ -122,8 +171,10 @@ receiver gained a small local-UI API (`sdr_local_*`) in
   (2620–2690 MHz). The input is matched for 2.4 GHz, so sensitivity drops
   away from it, but a nearby base station still shows up as flat OFDM bricks.
 - **Levels are in dBFS referred to gain index 50.** Every sample word carries
-  the gain index it was taken with (bits 20–27), so SPEC compensates each
-  sample even under hardware AGC. From index 36 up, one step is about 0.94 dB.
+  the gain index it was taken with (bits 20–26), so SPEC compensates each
+  sample even under hardware AGC. Bit 27 is not part of it: the PHY sets it
+  on runs of 1 or 8–9 samples inside strong bursts. From index 36 up, one
+  step is about 0.94 dB.
   This was measured on one unit against the ESP32's own 2400 MHz crystal
   harmonic. Below 36 the PHY's gain table is not monotonic.
 - **Self-made spurs are handled.** SPI traffic to the display during a capture
@@ -152,6 +203,13 @@ receiver gained a small local-UI API (`sdr_local_*`) in
   `OGSET <page> <tone> <kind> <ch>` sets HUNT up remotely, and
   `OGSPEC <view> <gain|-1>` sets SPEC up. `OGWF?` dumps per-row waterfall
   statistics and SPEC timings: capture, sample prep, FFT, log and frame.
+  `OGGRID` draws a calibration grid (any button leaves) for photographing
+  the screen together with the buttons.
+- **Fixed I/Q runs.** At a manual gain index of 0 the original ESP32 sometimes
+  switched its ADC off mid-capture and held one near-full-scale value for
+  about 350 ns, which smeared lobes over the spectrum (upstream issue #22).
+  The ADC is now forced on during captures. On the unit tested this never
+  happened at the gains the UI uses (AGC, or 36–50).
 - **Time coverage.** At 80 MS/s the CPU needs about 260 µs of FFT work for
   every 6.4 µs of air, so SPEC sees roughly 2–3 % of the time at the full
   span. One waterfall row takes up to 16 snapshots in 30 ms, about 0.4 ms of
