@@ -25,3 +25,11 @@ CONFIG_ESP_SDR_ODROID_GO=y
 # The board UI's buffers need the heap; the receiver never takes Wi-Fi frames.
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+# Wireless updates: two app slots; an image that resets before its UI loop
+# runs is rolled back.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-odroid-go.csv"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# The OTA mode's network stack is linked into every build: keep its static RAM
+# small (no IPv6), the receiver UI lives on what is left of the heap.
+CONFIG_LWIP_IPV6=n

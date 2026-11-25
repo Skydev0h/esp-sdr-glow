@@ -923,6 +923,45 @@ static void host_strip(uint16_t *s, int y0, int h) {
     text(s, y0, h, 4, 4, "USB HOST IN CONTROL", C_ORANGE, 1);
 }
 
+/* OGGRID: a grid to photograph together with the buttons, so their positions
+ * can be measured in screen pixels (x labelled every 40 along the bottom,
+ * ticks every 10, coloured corners). Any button leaves it. */
+static bool grid, grid_drawn;
+static void grid_strip(uint16_t *s, int y0, int h) {
+    sv_fill(s, W, h, C_BLACK);
+    for (int y = y0; y < y0 + h; y++) {
+        uint16_t *row = s + (y - y0) * W;
+        for (int x = 0; x < W; x++) {
+            int tick = x % 80 == 0 ? 44 : x % 40 == 0 ? 24 : x % 20 == 0 ? 14 : x % 10 == 0 ? 8 : 0;
+            uint16_t c = C_BLACK;
+            if (x % 40 == 0 || y % 40 == 0) c = RGB(90, 90, 90);
+            else if (x % 20 == 0 || y % 20 == 0) c = RGB(45, 45, 45);
+            if (H - 1 - y < tick || x == 0 || x == W - 1 || y == 0 || y == H - 1) c = C_WHITE;
+            row[x] = c;
+        }
+    }
+    char t[8];
+    text(s, y0, h, 3, H - 44, "0", C_YELLOW, 2);
+    for (int x = 40; x < W; x += 40) {
+        snprintf(t, sizeof(t), "%d", x);
+        int w = (int)strlen(t) * 12 - 2, y = x % 80 ? H - 44 : H - 64; /* staggered on their ticks */
+        rect(s, y0, h, x - w / 2 - 2, y - 2, w + 4, 18, C_BLACK);
+        text(s, y0, h, x - w / 2, y, t, C_YELLOW, 2);
+    }
+    for (int y = 40; y < H - 40; y += 40) {
+        snprintf(t, sizeof(t), "%d", y);
+        text(s, y0, h, 3, y + 2, t, C_DIM, 1);
+    }
+    rect(s, y0, h, 2, 2, 7, 7, C_RED);
+    rect(s, y0, h, W - 9, 2, 7, 7, C_GREEN);
+    rect(s, y0, h, 2, H - 9, 7, 7, RGB(60, 120, 255));
+    rect(s, y0, h, W - 9, H - 9, 7, 7, C_YELLOW);
+    rect(s, y0, h, 30, 92, 260, 44, C_BLACK);
+    text(s, y0, h, 36, 96, "CALIBRATION GRID 320x240", C_CYAN, 1);
+    text(s, y0, h, 36, 110, "photo it straight on, all buttons in", C_TEXT, 1);
+    text(s, y0, h, 36, 122, "frame; any button returns", C_TEXT, 1);
+}
+
 static unsigned pressed(void) {
     unsigned held = og_buttons(), now = held & ~held_prev;
     const unsigned rep = OG_UP | OG_DOWN | OG_LEFT | OG_RIGHT;
@@ -1158,6 +1197,14 @@ bool board_ui_command(const char *line) {
         burst_serial_send("END\n", 4);
         return true;
     }
+    if (og_ota_command(line)) return true;
+    if (!strcmp(line, "OGGRID")) {
+        grid = true;
+        grid_drawn = false;
+        splash_until = 0;
+        burst_serial_send("OK\n", 3);
+        return true;
+    }
     int v, g, a = 0;
     if (sscanf(line, "OGSPEC %d %d %d", &v, &g, &a) >= 2 && v >= 0 && v < VIEWS) {
         page = PAGE_SPEC;
@@ -1187,6 +1234,26 @@ bool board_ui_command(const char *line) {
 
 bool board_ui_step(bool host_active) {
     int64_t now = esp_timer_get_time();
+    static bool confirmed; /* the loop runs: keep this image after an OTA update */
+    if (!confirmed) {
+        og_ota_confirm();
+        confirmed = true;
+    }
+    if (grid) {
+        if (!grid_drawn) {
+            og_tone(0);
+            render(grid_strip, 0, H);
+            grid_drawn = true;
+        }
+        /* Stays up through the command's host lease; a button then leaves. */
+        if (!host_active && pressed()) {
+            grid = false;
+            host_shown = false;
+            swallow = held_prev;
+            if (page == PAGE_SPEC) spec_retuned();
+        }
+        return false;
+    }
     if (host_active) {
         if (!host_shown) {
             og_tone(0);

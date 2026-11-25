@@ -326,6 +326,9 @@ void app_main(void) {
     }
     ESP_ERROR_CHECK(e);
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+#if CONFIG_ESP_SDR_LOCAL_UI
+    board_boot();
+#endif
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));

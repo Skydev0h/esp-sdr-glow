@@ -19,6 +19,11 @@ void sdr_local_set_gain(int code);
 unsigned sdr_local_bandwidth(void); /* MHz, 0: automatic */
 void sdr_local_set_bandwidth(unsigned mhz);
 
+/* Runs once NVS and the default event loop are up, before the radio starts;
+ * a board may take the boot over here and never return (ODROID-GO: MENU held
+ * at power-on = wireless update mode). */
+void board_boot(void);
+
 /* Board UI. board_ui_init() runs before GPIO discovery so the board pins stay
  * reserved; board_ui_step() runs one frame in the command loop's idle slot
  * and returns false when it did nothing (the caller then yields). */

@@ -66,7 +66,8 @@ set(board_includes)
 if(IDF_TARGET STREQUAL "esp32")
     # Board UI drivers (ODROID-GO). Requirements are resolved before Kconfig
     # values exist, so list them for every ESP32 build; unused code is dropped.
-    list(APPEND dependencies esp_lcd esp_driver_spi esp_driver_ledc esp_driver_dac esp_adc esp_hal_ana_conv)
+    list(APPEND dependencies esp_lcd esp_driver_spi esp_driver_ledc esp_driver_dac esp_adc esp_hal_ana_conv
+                             app_update esp_http_server esp_netif lwip)
 endif()
 if(CONFIG_ESP_SDR_LOCAL_UI)
     list(APPEND sources "boards/common/sdr_view.c")
@@ -74,7 +75,7 @@ if(CONFIG_ESP_SDR_LOCAL_UI)
 endif()
 if(CONFIG_ESP_SDR_ODROID_GO)
     list(APPEND sources "boards/odroidgo/ui.c" "boards/odroidgo/lcd.c" "boards/odroidgo/io.c"
-                        "boards/odroidgo/tone.c" "boards/odroidgo/zb.c")
+                        "boards/odroidgo/tone.c" "boards/odroidgo/zb.c" "boards/odroidgo/ota.c")
     list(APPEND board_includes "boards/odroidgo")
 endif()
 

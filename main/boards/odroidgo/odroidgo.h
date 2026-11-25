@@ -48,6 +48,11 @@ unsigned og_tone_hz(void); /* what is playing, 0 = silence */
 void og_click(float loudness);
 void og_tone_volume(unsigned level);
 
+/* Wireless updates (ota.c, entered from board_boot()). og_ota_confirm() marks
+ * a freshly updated image good; og_ota_command() handles OGWIFI/OGWIPW. */
+void og_ota_confirm(void);
+bool og_ota_command(const char *line);
+
 /* Burst-aware band power for one capture (zb.c). Each band is a centre
  * frequency in MHz with a common half width; segments of ZB_FFT_N samples are
  * Hann-windowed and transformed, so short packets inside a long capture show
